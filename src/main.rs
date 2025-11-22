@@ -77,16 +77,29 @@ impl ProtocolHandler for Echo {
         // Read encoded message
         let encoded_msg = recv.read_to_end(1024).await.expect("READ TO END ERROR");
 
-        // Decode the message
+        // Decode the message (ignore errors)
         let (msg, _): (Message, usize) =
-            bincode::decode_from_slice(&encoded_msg, bincode::config::standard())
-                .map_err(|e| n0_error::AnyError::new(e))?;
+            match bincode::decode_from_slice(&encoded_msg, bincode::config::standard()) {
+                Ok(result) => result,
+                Err(_e) => {
+                    println!("Failed to decode message, using default Echo");
+                    (Message::Echo, 0)
+                }
+            };
         println!("Received: {:?}", msg);
 
-        // Encode and send back the same message
-        let encoded_response = bincode::encode_to_vec(&msg, bincode::config::standard())
-            .map_err(|e| n0_error::AnyError::new(e))?;
-        send.write_all(&encoded_response).await?;
+        // Encode and send back the same message (ignore errors)
+        let encoded_response = match bincode::encode_to_vec(&msg, bincode::config::standard()) {
+            Ok(encoded) => encoded,
+            Err(_e) => {
+                println!("Failed to encode message");
+                vec![]
+            }
+        };
+
+        send.write_all(&encoded_response)
+            .await
+            .expect("CANNOT WRITE ALL");
         println!("Sent echo: {:?}", msg);
         send.finish()?;
 
