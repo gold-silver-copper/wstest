@@ -82,7 +82,7 @@ impl ProtocolHandler for Echo {
             match bincode::decode_from_slice(&encoded_msg, bincode::config::standard()) {
                 Ok(result) => result,
                 Err(_e) => {
-                    println!("Failed to decode message, using default Echo");
+                    panic!("Failed to decode message, using default Echo");
                     (Message::Echo, 0)
                 }
             };
@@ -92,7 +92,7 @@ impl ProtocolHandler for Echo {
         let encoded_response = match bincode::encode_to_vec(&msg, bincode::config::standard()) {
             Ok(encoded) => encoded,
             Err(_e) => {
-                println!("Failed to encode message");
+                panic!("Failed to encode message");
                 vec![]
             }
         };
