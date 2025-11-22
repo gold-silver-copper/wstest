@@ -9,16 +9,7 @@ const ALPN: &[u8] = b"iroh-example/echo/0";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() > 1 {
-        match args[1].as_str() {
-            "singleplayer" => run_singleplayer().await?,
-            _ => println!("Usage: cargo run [server|client|singleplayer]"),
-        }
-    } else {
-        println!("Usage: cargo run [server|client|singleplayer]");
-    }
+    run_singleplayer().await?;
 
     Ok(())
 }
