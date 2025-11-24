@@ -18,12 +18,12 @@ enum Message {
 }
 
 // ====================
-// Simple Solution: One Stream Per Message
+// Unidirectional Stream Solution
 // ====================
 
-/// Send one message on a new stream
-async fn send_message(conn: &Connection, msg: &Message) -> Result<()> {
-    let (mut send, _recv) = conn.open_bi().await.anyerr()?;
+/// Send one message on a new unidirectional stream
+async fn send_one_way(conn: &Connection, msg: &Message) -> Result<()> {
+    let mut send = conn.open_uni().await.anyerr()?;
 
     let encoded = bincode::encode_to_vec(msg, bincode::config::standard())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -34,8 +34,8 @@ async fn send_message(conn: &Connection, msg: &Message) -> Result<()> {
     Ok(())
 }
 
-/// Receive one message from a stream
-async fn recv_message(mut recv: iroh::endpoint::RecvStream) -> Result<Message> {
+/// Receive one message from a unidirectional stream
+async fn recv_one_way(mut recv: iroh::endpoint::RecvStream) -> Result<Message> {
     let bytes = recv.read_to_end(MAX_MESSAGE_SIZE).await.anyerr()?;
 
     let (msg, _) = bincode::decode_from_slice(&bytes, bincode::config::standard())
@@ -65,22 +65,29 @@ async fn run_client_internal(addr: EndpointAddr) -> Result<()> {
     let endpoint = Endpoint::bind().await?;
     let conn = endpoint.connect(addr, ALPN).await?;
 
-    // Send multiple messages - each on its own stream!
-    println!("Sending multiple messages...");
-    send_message(&conn, &Message::Echo).await?;
-    send_message(&conn, &Message::Ping).await?;
-    send_message(&conn, &Message::Pong).await?;
-    println!("Sent 3 messages");
+    // Infinite stress test: send a message every 100ms
+    let mut message_count = 0u64;
+    let messages = vec![Message::Echo, Message::Ping, Message::Pong];
 
-    // Receive responses - each comes on its own stream
-    for i in 0..3 {
-        let (_send, recv) = conn.accept_bi().await.anyerr()?;
-        let response = recv_message(recv).await?;
-        println!("Received message {}: {:?}", i + 1, response);
+    loop {
+        let msg = &messages[message_count as usize % messages.len()];
+
+        match send_one_way(&conn, msg).await {
+            Ok(_) => {
+                message_count += 1;
+                if message_count % 10 == 0 {
+                    println!("Sent {} messages", message_count);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error sending message: {}", e);
+                break;
+            }
+        }
+
+        //tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     }
 
-    conn.close(0u32.into(), b"bye!");
-    endpoint.close().await;
     Ok(())
 }
 
@@ -92,11 +99,9 @@ async fn run_singleplayer() -> Result<()> {
     // Give server time to start
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Run client
+    // Run client (will run infinitely)
     run_client_internal(server_addr).await?;
 
-    println!("Singleplayer test complete!");
-    router.shutdown().await.anyerr()?;
     Ok(())
 }
 
@@ -108,20 +113,22 @@ impl ProtocolHandler for Echo {
         let endpoint_id = connection.remote_id();
         println!("Accepted connection from {}", endpoint_id);
 
-        // Accept multiple streams in a loop
-        loop {
-            match connection.accept_bi().await {
-                Ok((_send, recv)) => {
-                    // Spawn a task to handle each stream independently
-                    let conn = connection.clone();
-                    tokio::spawn(async move {
-                        match recv_message(recv).await {
-                            Ok(msg) => {
-                                println!("Server received: {:?}", msg);
+        let mut receive_count = 0u64;
 
-                                // Echo back on a NEW stream
-                                if let Err(e) = send_message(&conn, &msg).await {
-                                    eprintln!("Error sending response: {}", e);
+        // Accept unidirectional streams in a loop
+        loop {
+            match connection.accept_uni().await {
+                Ok(recv) => {
+                    // Spawn a task to handle each stream independently
+                    tokio::spawn(async move {
+                        match recv_one_way(recv).await {
+                            Ok(msg) => {
+                                // Just log occasionally to avoid spam
+                                if receive_count % 10 == 0 {
+                                    println!(
+                                        "Server received message #{}: {:?}",
+                                        receive_count, msg
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -129,10 +136,12 @@ impl ProtocolHandler for Echo {
                             }
                         }
                     });
+
+                    receive_count += 1;
                 }
                 Err(_) => {
                     // Connection closed
-                    println!("Connection closed");
+                    println!("Connection closed after {} messages", receive_count);
                     break;
                 }
             }
@@ -140,33 +149,4 @@ impl ProtocolHandler for Echo {
 
         Ok(())
     }
-}
-
-// ====================
-// Bonus: Even Simpler Unidirectional Version
-// ====================
-
-// For send-only messages (no response needed)
-#[allow(dead_code)]
-async fn send_one_way(conn: &Connection, msg: &Message) -> Result<()> {
-    let mut send = conn.open_uni().await.anyerr()?;
-
-    let encoded = bincode::encode_to_vec(msg, bincode::config::standard())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-    send.write_all(&encoded).await.anyerr()?;
-    send.finish().anyerr()?;
-
-    Ok(())
-}
-
-// For receiving one-way messages
-#[allow(dead_code)]
-async fn recv_one_way(mut recv: iroh::endpoint::RecvStream) -> Result<Message> {
-    let bytes = recv.read_to_end(MAX_MESSAGE_SIZE).await.anyerr()?;
-
-    let (msg, _) = bincode::decode_from_slice(&bytes, bincode::config::standard())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-    Ok(msg)
 }
